@@ -1,0 +1,329 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Editor Mobile - Vetorização</title>
+    <style>
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+            touch-action: none;
+        }
+        body, html {
+            width: 100%;
+            height: 100%;
+            overflow: hidden;
+            background-color: #1a1a1a;
+            font-family: sans-serif;
+            color: #fff;
+        }
+        #app {
+            display: flex;
+            flex-direction: column;
+            height: 100vh;
+        }
+        header {
+            padding: 10px;
+            background: #2c2c2c;
+            display: flex;
+            justify-content: space-around;
+            align-items: center;
+            border-bottom: 1px solid #444;
+            z-index: 10;
+        }
+        .preset-btn {
+            background: #444;
+            border: none;
+            color: white;
+            padding: 8px 12px;
+            border-radius: 6px;
+            font-size: 14px;
+            font-weight: bold;
+        }
+        .preset-btn.active {
+            background: #007aff;
+        }
+        #canvas-container {
+            flex: 1;
+            position: relative;
+            overflow: hidden;
+            background: #111;
+        }
+        #viewport {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            transform-origin: 0 0;
+        }
+        canvas, #bg-image {
+            position: absolute;
+            top: 0;
+            left: 0;
+        }
+        #bg-image {
+            opacity: 0.35;
+            pointer-events: none;
+        }
+        /* Botão flutuante central embaixo para alternar modo */
+        #floating-mode-bar {
+            position: absolute;
+            bottom: 70px;
+            left: 50%;
+            transform: translateX(-50%);
+            background: rgba(44, 44, 44, 0.9);
+            padding: 6px;
+            border-radius: 30px;
+            display: flex;
+            gap: 6px;
+            border: 1px solid #555;
+            z-index: 20;
+        }
+        .mode-btn {
+            background: transparent;
+            border: none;
+            color: white;
+            padding: 8px 16px;
+            border-radius: 20px;
+            font-size: 13px;
+            font-weight: bold;
+        }
+        .mode-btn.active {
+            background: #34c759;
+            color: #000;
+        }
+        footer {
+            padding: 10px;
+            background: #2c2c2c;
+            display: flex;
+            gap: 10px;
+            justify-content: space-between;
+            border-top: 1px solid #444;
+            z-index: 10;
+        }
+        .action-btn {
+            flex: 1;
+            background: #333;
+            border: 1px solid #555;
+            color: white;
+            padding: 12px;
+            border-radius: 8px;
+            font-size: 13px;
+            text-align: center;
+        }
+        #file-input {
+            display: none;
+        }
+    </style>
+</head>
+<body>
+    <div id="app">
+        <!-- Presets para o traçado -->
+        <header>
+            <button class="preset-btn active" data-preset="caminho">Caminho</button>
+            <button class="preset-btn" data-preset="pavimento">Pavimento</button>
+            <button class="preset-btn" data-preset="estacionamento">Estacionamento</button>
+        </header>
+
+        <!-- Área de Referência e Desenho com suporte a Pan -->
+        <div id="canvas-container">
+            <div id="viewport">
+                <img id="bg-image" src="" alt="Referência">
+                <canvas id="drawCanvas"></canvas>
+            </div>
+
+            <!-- Botão Flutuante Central Inferior para Arrastar ou Desenhar -->
+            <div id="floating-mode-bar">
+                <button class="mode-btn active" id="mode-draw">✏️ Desenhar</button>
+                <button class="mode-btn" id="mode-pan">✋ Arrastar</button>
+            </div>
+        </div>
+
+        <!-- Ações Táteis -->
+        <footer>
+            <button class="action-btn" id="btn-clear">Limpar</button>
+            <label class="action-btn" style="display:flex; align-items:center; justify-content:center; cursor:pointer;">
+                📁 Imagem
+                <input type="file" id="file-input" accept="image/*">
+            </label>
+            <button class="action-btn" id="btn-undo">Desfazer</button>
+        </footer>
+    </div>
+
+    <script>
+        const canvas = document.getElementById('drawCanvas');
+        const ctx = canvas.getContext('2d');
+        const container = document.getElementById('canvas-container');
+        const viewport = document.getElementById('viewport');
+        const bgImage = document.getElementById('bg-image');
+
+        let paths = [];
+        let currentPath = [];
+        let currentPreset = 'caminho';
+        let currentMode = 'draw'; // 'draw' ou 'pan'
+
+        // Controle de Transformação (Pan / Zoom)
+        let panX = 0, panY = 0;
+        let scale = 1;
+        let isDragging = false;
+        let startX = 0, startY = 0;
+
+        const presets = {
+            caminho: { color: '#ffcc00', width: 4, dash: [] },
+            pavimento: { color: '#00ccff', width: 14, dash: [] },
+            estacionamento: { color: '#ff3366', width: 3, dash: [6, 6] }
+        };
+
+        function resizeCanvas() {
+            const width = container.clientWidth * 2;
+            const height = container.clientHeight * 2;
+            canvas.width = width;
+            canvas.height = height;
+            canvas.style.width = container.clientWidth + 'px';
+            canvas.style.height = container.clientHeight + 'px';
+            bgImage.width = container.clientWidth;
+            bgImage.height = container.clientHeight;
+            redraw();
+        }
+        window.addEventListener('resize', resizeCanvas);
+        resizeCanvas();
+
+        function updateTransform() {
+            viewport.style.transform = `translate(${panX}px, ${panY}px) scale(${scale})`;
+        }
+
+        // Alternância de Modos (Desenhar vs Arrastar)
+        document.getElementById('mode-draw').addEventListener('click', () => {
+            currentMode = 'draw';
+            document.getElementById('mode-draw').classList.add('active');
+            document.getElementById('mode-pan').classList.remove('active');
+        });
+
+        document.getElementById('mode-pan').addEventListener('click', () => {
+            currentMode = 'pan';
+            document.getElementById('mode-pan').classList.add('active');
+            document.getElementById('mode-draw').classList.remove('active');
+        });
+
+        // Gestos de Toque Unificados
+        container.addEventListener('touchstart', (e) => {
+            e.preventDefault();
+            const touch = e.touches[0];
+            startX = touch.clientX;
+            startY = touch.clientY;
+
+            if (currentMode === 'pan') {
+                isDragging = true;
+            } else if (currentMode === 'draw' && e.touches.length === 1) {
+                const rect = canvas.getBoundingClientRect();
+                const x = (touch.clientX - rect.left) * (canvas.width / rect.width);
+                const y = (touch.clientY - rect.top) * (canvas.height / rect.height);
+                currentPath = [{ x, y }];
+            }
+        });
+
+        container.addEventListener('touchmove', (e) => {
+            e.preventDefault();
+            const touch = e.touches[0];
+
+            if (currentMode === 'pan' && isDragging) {
+                const dx = touch.clientX - startX;
+                const dy = touch.clientY - startY;
+                panX += dx;
+                panY += dy;
+                startX = touch.clientX;
+                startY = touch.clientY;
+                updateTransform();
+            } else if (currentMode === 'draw' && currentPath.length > 0) {
+                const rect = canvas.getBoundingClientRect();
+                const x = (touch.clientX - rect.left) * (canvas.width / rect.width);
+                const y = (touch.clientY - rect.top) * (canvas.height / rect.height);
+                currentPath.push({ x, y });
+                redraw();
+                drawCurrentPath();
+            }
+        });
+
+        container.addEventListener('touchend', (e) => {
+            e.preventDefault();
+            if (currentMode === 'pan') {
+                isDragging = false;
+            } else if (currentMode === 'draw' && currentPath.length > 0) {
+                paths.push({
+                    preset: currentPreset,
+                    points: [...currentPath],
+                    style: { ...presets[currentPreset] }
+                });
+                currentPath = [];
+                redraw();
+            }
+        });
+
+        function drawPathData(pathObj) {
+            if (pathObj.points.length < 2) return;
+            ctx.beginPath();
+            ctx.strokeStyle = pathObj.style.color;
+            ctx.lineWidth = pathObj.style.width;
+            ctx.setLineDash(pathObj.style.dash);
+            ctx.lineCap = 'round';
+            ctx.lineJoin = 'round';
+
+            ctx.moveTo(pathObj.points[0].x, pathObj.points[0].y);
+            for (let i = 1; i < pathObj.points.length; i++) {
+                ctx.lineTo(pathObj.points[i].x, pathObj.points[i].y);
+            }
+            ctx.stroke();
+            ctx.setLineDash([]);
+        }
+
+        function drawCurrentPath() {
+            if (currentPath.length < 2) return;
+            drawPathData({
+                preset: currentPreset,
+                points: currentPath,
+                style: presets[currentPreset]
+            });
+        }
+
+        function redraw() {
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            paths.forEach(p => drawPathData(p));
+        }
+
+        // Troca de Presets
+        document.querySelectorAll('.preset-btn').forEach(btn => {
+            btn.addEventListener('click', (e) => {
+                document.querySelectorAll('.preset-btn').forEach(b => b.classList.remove('active'));
+                btn.classList.add('active');
+                currentPreset = btn.getAttribute('data-preset');
+            });
+        });
+
+        // Upload de Imagem Direto da Galeria
+        document.getElementById('file-input').addEventListener('change', (e) => {
+            const file = e.target.files[0];
+            if (file) {
+                const reader = new FileReader();
+                reader.onload = function(event) {
+                    bgImage.src = event.target.result;
+                };
+                reader.readAsDataURL(file);
+            }
+        });
+
+        // Controles Inferiores
+        document.getElementById('btn-clear').addEventListener('click', () => {
+            paths = [];
+            redraw();
+        });
+
+        document.getElementById('btn-undo').addEventListener('click', () => {
+            paths.pop();
+            redraw();
+        });
+    </script>
+</body>
+</html>
