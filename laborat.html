@@ -1,0 +1,560 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<title>Campo de Possibilidades — V2 · Rede de Encontros</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<style>
+  :root{
+    --bg:#05070A; --panel:#0B1118cc; --border:#233039;
+    --text:#E8EEF2; --text-dim:#8D9AA3;
+    --cyan:#32D9FF; --gold:#FFD447; --green:#39FF88;
+    --mono:'JetBrains Mono','SFMono-Regular',Consolas,monospace;
+    --sans:'Inter',system-ui,-apple-system,sans-serif;
+  }
+  *{box-sizing:border-box}
+  html,body{height:100%;margin:0;background:var(--bg);overflow:hidden;font-family:var(--sans);color:var(--text)}
+  #stage{position:absolute;inset:0;cursor:crosshair;touch-action:none}
+  canvas{display:block}
+  .hud{position:absolute;pointer-events:none;z-index:10}
+  #title{top:20px;left:20px}
+  #title .eyebrow{font-family:var(--mono);font-size:10px;letter-spacing:.12em;color:var(--cyan);opacity:.75}
+  #title h1{margin:4px 0 0;font-size:16px;font-weight:600}
+  #title .sub{font-family:var(--mono);font-size:11px;color:var(--text-dim);margin-top:3px}
+  #hint{bottom:20px;left:20px;font-family:var(--mono);font-size:10px;color:var(--text-dim);
+        background:var(--panel);border:1px solid var(--border);border-radius:8px;padding:8px 12px;
+        max-width:300px;line-height:1.6;backdrop-filter:blur(4px)}
+  #hint b{color:var(--text)}
+  #readout{top:20px;right:20px;font-family:var(--mono);font-size:10px;color:var(--text-dim);
+        background:var(--panel);border:1px solid var(--border);border-radius:8px;padding:10px 14px;
+        min-width:205px;backdrop-filter:blur(4px);opacity:0;transition:opacity .4s}
+  #readout.show{opacity:1}
+  #readout .row{display:flex;justify-content:space-between;gap:14px;margin:2px 0}
+  #readout .row span:last-child{color:var(--cyan)}
+  #readout .label{color:var(--text-dim);letter-spacing:.06em}
+  #regua{bottom:20px;right:20px;font-family:var(--mono);font-size:10px;color:var(--text-dim);
+        background:var(--panel);border:1px solid var(--border);border-radius:8px;padding:8px 12px;
+        display:flex;align-items:center;gap:8px;backdrop-filter:blur(4px)}
+  #regua .dot{width:7px;height:7px;border-radius:50%;background:var(--green);box-shadow:0 0 6px var(--green)}
+  #status{bottom:70px;right:20px;font-family:var(--mono);font-size:10px;color:var(--gold);
+        background:var(--panel);border:1px solid var(--border);border-radius:8px;padding:8px 12px;
+        opacity:0;transition:opacity .25s}
+  #status.show{opacity:1}
+</style>
+</head>
+<body>
+<div id="stage"></div>
+
+<div class="hud" id="title">
+  <div class="eyebrow">CAMPO DE POSSIBILIDADES — V2</div>
+  <h1>Rede de encontros · sondagem por percurso</h1>
+  <div class="sub">centro → malha 16D → malha 36D → encontro → 36D → 16D → centro</div>
+</div>
+
+<div class="hud" id="hint">
+  Arraste para olhar em volta.<br>
+  <b>Toque uma entidade</b> — o pulso percorre as camadas e segue para a próxima entidade.
+  Toques sucessivos constroem o caminho <b>1 → 2 → 3</b>. O feixe deixa um rastro temporal.
+</div>
+
+<div class="hud" id="readout">
+  <div class="row"><span class="label">ENTIDADES</span><span id="rEntities">3</span></div>
+  <div class="row"><span class="label">ETAPA</span><span id="rStage">—</span></div>
+  <div class="row"><span class="label">PULSOS</span><span id="rPulses">0</span></div>
+  <div class="row"><span class="label">PERCURSO</span><span id="rPath">—</span></div>
+</div>
+
+<div class="hud" id="status">SONDAGEM EM PERCURSO</div>
+<div class="hud" id="regua"><span class="dot"></span> RÉGUA · A</div>
+
+<script>
+(function(){
+  const stage = document.getElementById('stage');
+
+  const scene = new THREE.Scene();
+  const camera = new THREE.PerspectiveCamera(70, innerWidth/innerHeight, 0.1, 220);
+  camera.position.set(0,0,0);
+
+  const renderer = new THREE.WebGLRenderer({antialias:true, alpha:false});
+  renderer.setPixelRatio(Math.min(devicePixelRatio||1, 2));
+  renderer.setSize(innerWidth, innerHeight);
+  renderer.setClearColor(0x05070a, 1);
+  stage.appendChild(renderer.domElement);
+
+  // ------------------------------------------------------------
+  // FUNDO
+  // ------------------------------------------------------------
+  {
+    const n = 1000, pos = new Float32Array(n*3);
+    for(let i=0;i<n;i++){
+      const r = 65 + Math.random()*45;
+      const th = Math.random()*Math.PI*2;
+      const ph = Math.acos(2*Math.random()-1);
+      pos[i*3]   = r*Math.sin(ph)*Math.cos(th);
+      pos[i*3+1] = r*Math.sin(ph)*Math.sin(th);
+      pos[i*3+2] = r*Math.cos(ph);
+    }
+    const g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.BufferAttribute(pos,3));
+    const m = new THREE.PointsMaterial({
+      color:0x3a4a52, size:.5, transparent:true, opacity:.55
+    });
+    scene.add(new THREE.Points(g,m));
+  }
+
+  // ------------------------------------------------------------
+  // OLHAR
+  // ------------------------------------------------------------
+  let yaw=0, pitch=0, dragging=false, moved=false;
+  let lastX=0,lastY=0,downX=0,downY=0,downT=0;
+
+  function applyLook(){
+    camera.rotation.order='YXZ';
+    camera.rotation.y=yaw;
+    camera.rotation.x=pitch;
+  }
+  applyLook();
+
+  stage.addEventListener('pointerdown',e=>{
+    dragging=true; moved=false;
+    lastX=e.clientX; lastY=e.clientY;
+    downX=e.clientX; downY=e.clientY; downT=performance.now();
+  });
+
+  stage.addEventListener('pointermove',e=>{
+    if(!dragging) return;
+    const dx=e.clientX-lastX, dy=e.clientY-lastY;
+    if(Math.hypot(e.clientX-downX,e.clientY-downY)>14) moved=true;
+    yaw-=dx*.0032;
+    pitch-=dy*.0032;
+    pitch=Math.max(-1.4,Math.min(1.4,pitch));
+    lastX=e.clientX; lastY=e.clientY;
+    applyLook();
+  });
+
+  stage.addEventListener('pointerup',e=>{
+    dragging=false;
+    const dt=performance.now()-downT;
+    if(!moved && dt<600) selectEntity(downX,downY);
+  });
+
+  // ------------------------------------------------------------
+  // ENTIDADES
+  //
+  // Cada entidade tem:
+  //   centro
+  //   malha 16D = gama próxima
+  //   malha 36D = gama externa/intermediária
+  //
+  // As posições ficam separadas no espaço.
+  // ------------------------------------------------------------
+  const entities = [
+    {id:1, pos:new THREE.Vector3(-13,  2, -2), color:0x32D9FF},
+    {id:2, pos:new THREE.Vector3(  0, -1, -8), color:0x39FF88},
+    {id:3, pos:new THREE.Vector3( 13,  3, -1), color:0xFFD447}
+  ];
+
+  const INNER_R = 3.0;   // 16D
+  const OUTER_R = 4.8;   // 36D
+
+  function makeShell(entity, radius, detail, opacity, color){
+    const group = new THREE.Group();
+    group.position.copy(entity.pos);
+
+    const geo = new THREE.IcosahedronGeometry(radius, detail);
+    const edges = new THREE.EdgesGeometry(geo);
+
+    const lineMat = new THREE.LineBasicMaterial({
+      color, transparent:true, opacity
+    });
+    const lines = new THREE.LineSegments(edges,lineMat);
+
+    const pointMat = new THREE.PointsMaterial({
+      color, size: detail===3 ? .72 : .62,
+      transparent:true, opacity:opacity+.16,
+      sizeAttenuation:true
+    });
+    const points = new THREE.Points(geo,pointMat);
+
+    group.add(lines);
+    group.add(points);
+    scene.add(group);
+
+    return {
+      group, geo, lines, points,
+      lineMat, pointMat, radius
+    };
+  }
+
+  // detalhe 3 ≈ malha densa da gama 16D visualizada;
+  // detalhe 4 fornece uma camada externa mais rica, aqui tratada
+  // como a "gama 36" visual.
+  for(const e of entities){
+    e.inner = makeShell(e,INNER_R,3,.20,e.color);
+    e.outer = makeShell(e,OUTER_R,4,.095,e.color);
+
+    // núcleo da entidade
+    const coreGeo = new THREE.SphereGeometry(.28,16,16);
+    const coreMat = new THREE.MeshBasicMaterial({
+      color:e.color,transparent:true,opacity:.9
+    });
+    e.core = new THREE.Mesh(coreGeo,coreMat);
+    e.core.position.copy(e.pos);
+    scene.add(e.core);
+
+    // anel de encontro
+    const ringGeo = new THREE.RingGeometry(.55,.60,48);
+    const ringMat = new THREE.MeshBasicMaterial({
+      color:e.color,side:THREE.DoubleSide,transparent:true,opacity:.0
+    });
+    e.ring = new THREE.Mesh(ringGeo,ringMat);
+    e.ring.position.copy(e.pos);
+    e.ring.lookAt(camera.position);
+    scene.add(e.ring);
+  }
+
+  // ------------------------------------------------------------
+  // CAMINHOS ENTRE ENTIDADES
+  // O caminho existe como relação, mas permanece apagado até o pulso.
+  // ------------------------------------------------------------
+  const links=[];
+  for(let i=0;i<entities.length-1;i++){
+    const a=entities[i].pos, b=entities[i+1].pos;
+    const geo=new THREE.BufferGeometry().setFromPoints([a,b]);
+    const mat=new THREE.LineBasicMaterial({
+      color:0x21424d,transparent:true,opacity:.12
+    });
+    const line=new THREE.Line(geo,mat);
+    scene.add(line);
+    links.push({line,a,b});
+  }
+
+  // ------------------------------------------------------------
+  // PULSOS
+  // Um pulso não "teleporta":
+  //
+  // centro A
+  //   -> malha 16D A
+  //   -> malha 36D A
+  //   -> caminho entre A/B
+  //   -> malha 36D B
+  //   -> malha 16D B
+  //   -> centro B
+  //
+  // Depois, se B for tocada:
+  // B -> C pelo mesmo princípio.
+  // ------------------------------------------------------------
+  const pulses=[];
+
+  function makePulsePath(from,to){
+    const d=to.clone().sub(from);
+    const dist=d.length();
+    const dir=d.clone().normalize();
+
+    const fromInner=from.clone().add(dir.clone().multiplyScalar(INNER_R));
+    const fromOuter=from.clone().add(dir.clone().multiplyScalar(OUTER_R));
+
+    const toOuter=to.clone().sub(dir.clone().multiplyScalar(OUTER_R));
+    const toInner=to.clone().sub(dir.clone().multiplyScalar(INNER_R));
+
+    const mid=fromOuter.clone().lerp(toOuter,.5);
+
+    // Pequena curvatura para que pareça um percurso, não uma régua reta.
+    const side=new THREE.Vector3(-dir.z,0,dir.x);
+    if(side.lengthSq()<.001) side.set(0,1,0);
+    side.normalize();
+
+    const bend=side.multiplyScalar(Math.min(2.0,dist*.08));
+
+    return [
+      from.clone(),
+      fromInner,
+      fromOuter,
+      fromOuter.clone().lerp(mid,.5).add(bend.clone().multiplyScalar(.45)),
+      mid.clone().add(bend),
+      mid.clone().lerp(toOuter,.5).add(bend.clone().multiplyScalar(.45)),
+      toOuter,
+      toInner,
+      to.clone()
+    ];
+  }
+
+  function createPulse(fromEntity,toEntity){
+    const pts=makePulsePath(fromEntity.pos,toEntity.pos);
+    const curve=new THREE.CatmullRomCurve3(pts);
+    const samples=90;
+    const sampled=curve.getPoints(samples);
+
+    const tubeGeo=new THREE.BufferGeometry().setFromPoints(sampled);
+    // FEIXE EM MOVIMENTO: é o pulso que percorre a relação.
+    const tubeMat=new THREE.LineBasicMaterial({
+      color:0xFFD447,transparent:true,opacity:.0
+    });
+    const line=new THREE.Line(tubeGeo,tubeMat);
+    scene.add(line);
+
+    // RASTRO: depois que o pulso passa, a relação fica marcada
+    // por alguns segundos. Não é o pulso; é a memória do percurso.
+    const trailMat=new THREE.LineBasicMaterial({
+      color:0xFFD447,transparent:true,opacity:0
+    });
+    const trail=new THREE.Line(tubeGeo,ttrailMat = trailMat);
+    trail.geometry.setDrawRange(0,0);
+    scene.add(trail);
+
+    // núcleo luminoso que viaja sobre o percurso
+    const orbGeo=new THREE.SphereGeometry(.16,12,12);
+    const orbMat=new THREE.MeshBasicMaterial({
+      color:0xFFF3A0,transparent:true,opacity:0
+    });
+    const orb=new THREE.Mesh(orbGeo,orbMat);
+    scene.add(orb);
+
+    // ondas no meio do percurso
+    const waves=[];
+    for(let i=0;i<4;i++){
+      const wg=new THREE.RingGeometry(.18+i*.10,.22+i*.10,40);
+      const wm=new THREE.MeshBasicMaterial({
+        color:0xFFD447,side:THREE.DoubleSide,
+        transparent:true,opacity:0
+      });
+      const w=new THREE.Mesh(wg,wm);
+      scene.add(w);
+      waves.push(w);
+    }
+
+    pulses.push({
+      fromEntity,toEntity,curve,samples,line,trail,orb,waves,
+      t0:performance.now(),
+      duration:2400,
+      trailDuration:7000,
+      active:true,
+      finished:false,
+      trailT0:0
+    });
+
+    flashEntity(fromEntity);
+  }
+
+  function flashEntity(entity){
+    entity.ring.material.opacity=.95;
+    entity.ring.scale.setScalar(.7);
+    entity.core.scale.setScalar(1.7);
+  }
+
+  function updatePulse(p,t){
+    const age=t-p.t0;
+    const q=Math.max(0,Math.min(1,age/p.duration));
+
+    // Enquanto o pulso viaja, o FEIXE cresce atrás dele.
+    const draw=Math.max(2,Math.floor(q*p.samples));
+    p.line.geometry.setDrawRange(0,draw);
+    p.line.material.opacity=q<.12 ? q/.12 : (q>.82 ? (1-q)/.18 : .78);
+
+    const u=Math.min(.999,q);
+    const pos=p.curve.getPointAt(u);
+    p.orb.position.copy(pos);
+    p.orb.material.opacity=q<.08 ? q/.08 : (q>.92 ? (1-q)/.08 : 1);
+
+    // Ondas nascem no meio e expandem quando o pulso cruza a região.
+    for(let i=0;i<p.waves.length;i++){
+      const w=p.waves[i];
+      const wu=Math.max(0,Math.min(1,(q-(.40+i*.035))/.32));
+      const wp=p.curve.getPointAt(.5);
+      w.position.copy(wp);
+      w.lookAt(camera.position);
+      w.scale.setScalar(.2+wu*(1.5+i*.55));
+      w.material.opacity=Math.max(0, .55*(1-wu));
+    }
+
+    // Ao chegar ao destino, a linha deixa de ser "pulso" e vira RASTRO.
+    if(q>=1 && !p.finished){
+      p.finished=true;
+      p.trailT0=t;
+      flashEntity(p.toEntity);
+
+      scene.remove(p.line);
+      p.line.geometry.dispose();
+      p.line.material.dispose();
+
+      scene.remove(p.orb);
+      p.orb.geometry.dispose();
+      p.orb.material.dispose();
+
+      // O rastro fica inteiro desenhado e começa a desaparecer lentamente.
+      p.trail.geometry.setDrawRange(0,p.samples+1);
+      p.trail.material.opacity=.34;
+    }
+
+    // Memória temporal do percurso.
+    if(p.finished){
+      const trailAge=t-p.trailT0;
+      const trailQ=Math.max(0,Math.min(1,trailAge/p.trailDuration));
+
+      p.trail.material.opacity=.34*(1-trailQ);
+
+      if(trailQ>=1){
+        scene.remove(p.trail);
+        p.trail.geometry.dispose();
+        p.trail.material.dispose();
+
+        for(const w of p.waves){
+          scene.remove(w);
+          w.geometry.dispose();
+          w.material.dispose();
+        }
+        return true;
+      }
+    }
+
+    return false;
+  }
+
+  // ------------------------------------------------------------
+  // SELEÇÃO DA ENTIDADE
+  // ------------------------------------------------------------
+  const raycaster=new THREE.Raycaster();
+  const mouse=new THREE.Vector2();
+
+  let selected=0;
+  let pulseCount=0;
+  let busy=false;
+  const path=[1];
+
+  function screenRay(clientX,clientY){
+    mouse.set(
+      clientX/innerWidth*2-1,
+      -(clientY/innerHeight)*2+1
+    );
+    raycaster.setFromCamera(mouse,camera);
+  }
+
+  function selectEntity(clientX,clientY){
+    // Como a câmera está no centro, calculamos qual centro está
+    // mais próximo do raio de visão. Isso é mais robusto no toque
+    // do que depender das linhas finas da malha.
+    screenRay(clientX,clientY);
+
+    let best=null,bestScore=Infinity;
+    for(const e of entities){
+      const v=e.pos.clone().sub(camera.position);
+      const along=v.dot(raycaster.ray.direction);
+      if(along<=0) continue;
+
+      const closest=raycaster.ray.origin.clone()
+        .add(raycaster.ray.direction.clone().multiplyScalar(along));
+
+      const dist=closest.distanceTo(e.pos);
+      const score=dist/(Math.max(along,1));
+
+      if(dist<OUTER_R*.95 && score<bestScore){
+        best=e; bestScore=score;
+      }
+    }
+
+    // Se o toque não caiu claramente numa entidade, escolhe a mais
+    // próxima da direção tocada.
+    if(!best){
+      for(const e of entities){
+        const v=e.pos.clone().normalize();
+        const score=1-v.dot(raycaster.ray.direction);
+        if(score<bestScore){best=e;bestScore=score;}
+      }
+    }
+
+    if(!best) return;
+
+    trigger(best);
+  }
+
+  function trigger(entity){
+    if(busy) return;
+
+    // Primeiro toque: entidade 1.
+    // Próximos toques: se o usuário tocar uma entidade posterior,
+    // criamos o percurso entre a última entidade visitada e ela.
+    if(path[path.length-1]===entity.id){
+      pulseCount++;
+      document.getElementById('rPulses').textContent=pulseCount;
+      flashEntity(entity);
+      return;
+    }
+
+    const from=entities.find(e=>e.id===path[path.length-1]);
+    if(!from) return;
+
+    // Aceita o avanço 1 -> 2 -> 3.
+    // Também permite tocar uma entidade futura e registrar o salto,
+    // sem alterar a estrutura da rede.
+    path.push(entity.id);
+
+    busy=true;
+    pulseCount++;
+    document.getElementById('rPulses').textContent=pulseCount;
+    document.getElementById('rPath').textContent=path.join(' → ');
+    document.getElementById('rStage').textContent=
+      from.id+' → '+entity.id;
+
+    document.getElementById('status').classList.add('show');
+
+    createPulse(from,entity);
+
+    // A trava dura só o tempo de uma sondagem.
+    setTimeout(()=>{
+      busy=false;
+      document.getElementById('status').classList.remove('show');
+    },2450);
+  }
+
+  // Inicializa readout.
+  document.getElementById('readout').classList.add('show');
+
+  // ------------------------------------------------------------
+  // ANIMAÇÃO GERAL
+  // ------------------------------------------------------------
+  const clock=new THREE.Clock();
+
+  function tick(){
+    const t=performance.now();
+    const et=clock.getElapsedTime();
+
+    // Respiração das malhas.
+    entities.forEach((e,i)=>{
+      const b=1+Math.sin(et*.55+i*.8)*.012;
+      e.inner.group.scale.setScalar(b);
+      e.outer.group.scale.setScalar(1+Math.sin(et*.42+i)*.008);
+
+      e.inner.lineMat.opacity=.18+Math.sin(et*.8+i)*.035;
+      e.outer.lineMat.opacity=.075+Math.sin(et*.55+i)*.018;
+      e.inner.pointMat.opacity=.30+Math.sin(et*.9+i)*.07;
+      e.outer.pointMat.opacity=.17+Math.sin(et*.7+i)*.035;
+
+      e.ring.lookAt(camera.position);
+      e.ring.rotation.z+=.002;
+
+      // retorna o núcleo ao tamanho normal
+      e.core.scale.lerp(new THREE.Vector3(1,1,1),.08);
+      e.ring.scale.lerp(new THREE.Vector3(1,1,1),.055);
+      e.ring.material.opacity*=.985;
+    });
+
+    for(let i=pulses.length-1;i>=0;i--){
+      if(updatePulse(pulses[i],t)) pulses.splice(i,1);
+    }
+
+    renderer.render(scene,camera);
+    requestAnimationFrame(tick);
+  }
+
+  tick();
+
+  addEventListener('resize',()=>{
+    camera.aspect=innerWidth/innerHeight;
+    camera.updateProjectionMatrix();
+    renderer.setSize(innerWidth,innerHeight);
+  });
+})();
+</script>
+</body>
+</html>
